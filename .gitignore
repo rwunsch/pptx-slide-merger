@@ -1,8 +1,16 @@
 __pycache__/
 *.pyc
+*.pyo
 *.egg-info/
 dist/
 build/
 .venv/
 *.pptx
 !tests/fixtures/*.pptx
+.eggs/
+*.egg
+.pytest_cache/
+.tox/
+*.so
+.DS_Store
+Thumbs.db

@@ -41,12 +41,21 @@ REL_IMAGE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships
 REL_NOTES = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide"
 REL_THEME = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme"
 REL_NOTES_MASTER = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster"
+REL_VIDEO = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/video"
+REL_AUDIO = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/audio"
+REL_MEDIA_ALT = "http://schemas.microsoft.com/office/2007/relationships/media"
+
+MEDIA_REL_TYPES = {REL_IMAGE, REL_VIDEO, REL_AUDIO, REL_MEDIA_ALT}
+MEDIA_REL_KEYWORDS = {'image', 'video', 'audio', 'media'}
 
 MEDIA_MIME = {
     'png': 'image/png', 'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
     'gif': 'image/gif', 'svg': 'image/svg+xml', 'emf': 'image/x-emf',
     'wmf': 'image/x-wmf', 'tiff': 'image/tiff', 'tif': 'image/tiff',
     'wdp': 'image/vnd.ms-photo', 'fntdata': 'application/x-fontdata',
+    'mp4': 'video/mp4', 'm4v': 'video/mp4', 'mov': 'video/quicktime',
+    'avi': 'video/avi', 'wmv': 'video/x-ms-wmv', 'mp3': 'audio/mpeg',
+    'wav': 'audio/wav', 'wma': 'audio/x-ms-wma',
 }
 
 # OOXML element ordering for <p:presentation>
@@ -94,6 +103,14 @@ def _max_rid(rels_root):
         if m:
             mx = max(mx, int(m.group(1)))
     return mx
+
+
+def _is_media_rel(rel_type: str) -> bool:
+    """Check if a relationship type refers to a media file (image/video/audio)."""
+    if rel_type in MEDIA_REL_TYPES:
+        return True
+    lower = rel_type.lower().split('/')[-1]
+    return lower in MEDIA_REL_KEYWORDS
 
 
 class PptxMerger:
@@ -147,6 +164,8 @@ class PptxMerger:
 
         self._layout_map = {}
         self._master_map = {}
+        self._media_hash_map = {}  # content_hash -> relative path from ppt/
+        self._index_existing_media()
         self._notes_master_copied = self._has_notes_master()
         self._register_base_layouts(base_pptx)
         self._slide_count = 0
@@ -204,6 +223,18 @@ class PptxMerger:
                         mx = val
         return mx
 
+    def _index_existing_media(self):
+        """Hash all existing media files in the base so we can deduplicate."""
+        import hashlib
+        media_dir = os.path.join(self.base_dir, "ppt", "media")
+        if not os.path.exists(media_dir):
+            return
+        for f in os.listdir(media_dir):
+            fp = os.path.join(media_dir, f)
+            if os.path.isfile(fp):
+                h = hashlib.md5(open(fp, 'rb').read()).hexdigest()
+                self._media_hash_map[h] = f"media/{f}"
+
     def _has_notes_master(self):
         return os.path.exists(
             os.path.join(self.base_dir, "ppt", "notesMasters", "notesMaster1.xml"))
@@ -239,6 +270,11 @@ class PptxMerger:
     def _copy_media_file(self, src_media_path: str) -> str:
         if not os.path.exists(src_media_path):
             return None
+        import hashlib
+        content = open(src_media_path, 'rb').read()
+        h = hashlib.md5(content).hexdigest()
+        if h in self._media_hash_map:
+            return self._media_hash_map[h]
         ext = os.path.splitext(src_media_path)[1]
         new_name = f"image{self._next_media}{ext}"
         self._next_media += 1
@@ -246,6 +282,7 @@ class PptxMerger:
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(src_media_path, dst)
         self._ensure_ext_ct(ext.lstrip('.'))
+        self._media_hash_map[h] = f"media/{new_name}"
         return f"media/{new_name}"
 
     def _ensure_ext_ct(self, ext):
@@ -271,7 +308,7 @@ class PptxMerger:
     def _remap_rels_media(self, rels_root, src_part_dir):
         for rel in rels_root.findall(f'{{{NS_REL}}}Relationship'):
             rel_type = rel.get('Type', '')
-            if rel_type == REL_IMAGE or '/image' in rel_type:
+            if _is_media_rel(rel_type):
                 src_path = _resolve(src_part_dir, rel.get('Target', ''))
                 new_path = self._copy_media_file(src_path)
                 if new_path:
@@ -295,7 +332,7 @@ class PptxMerger:
             for rel in rels_root.findall(f'{{{NS_REL}}}Relationship'):
                 rel_type = rel.get('Type', '')
                 target = rel.get('Target', '')
-                if rel_type == REL_IMAGE or '/image' in rel_type:
+                if _is_media_rel(rel_type):
                     src_path = _resolve(
                         os.path.join(src_dir, "ppt", "notesMasters"), target)
                     new_path = self._copy_media_file(src_path)
@@ -369,7 +406,7 @@ class PptxMerger:
                 rel_type = rel.get('Type', '')
                 rid = rel.get('Id', '')
 
-                if rel_type == REL_IMAGE or '/image' in rel_type:
+                if _is_media_rel(rel_type):
                     src_path = _resolve(os.path.join(src_dir, "ppt", "slideMasters"), target)
                     new_path = self._copy_media_file(src_path)
                     if new_path:
@@ -475,7 +512,7 @@ class PptxMerger:
                 rel_type = rel.get('Type', '')
                 target = rel.get('Target', '')
 
-                if rel_type == REL_IMAGE or '/image' in rel_type:
+                if _is_media_rel(rel_type):
                     src_media = _resolve(
                         os.path.join(src_dir, "ppt", "slideLayouts"), target)
                     new_media = self._copy_media_file(src_media)
@@ -548,6 +585,12 @@ class PptxMerger:
             rels_tree = _parse_xml(src_rels)
             rels_root = rels_tree.getroot()
 
+            # Strip comment references (we don't copy comment files)
+            for rel in list(rels_root.findall(f'{{{NS_REL}}}Relationship')):
+                target = rel.get('Target', '')
+                if 'comment' in target.lower() or 'comment' in rel.get('Type', '').lower():
+                    rels_root.remove(rel)
+
             new_layout = self._get_layout_for_slide(
                 source_pptx, src_dir, rels_root)
 
@@ -555,7 +598,7 @@ class PptxMerger:
                 target = rel.get('Target', '')
                 rel_type = rel.get('Type', '')
 
-                if rel_type == REL_IMAGE or '/image' in rel_type:
+                if _is_media_rel(rel_type):
                     src_path = _resolve(
                         os.path.join(src_dir, "ppt", "slides"), target)
                     new_path = self._copy_media_file(src_path)
@@ -589,7 +632,7 @@ class PptxMerger:
                                 ntype = nrel.get('Type', '')
                                 if 'slide' in ntype and 'notesSlide' not in ntype and 'notesMaster' not in ntype:
                                     nrel.set('Target', f"../slides/{new_slide_file}")
-                                elif '/image' in ntype or ntype == REL_IMAGE:
+                                elif _is_media_rel(ntype):
                                     sp = _resolve(
                                         os.path.join(src_dir, "ppt", "notesSlides"),
                                         nrel.get('Target', ''))
