@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pptx-slide-merger"
+version = "0.1.0"
+description = "Copy slides between PowerPoint files preserving original formatting"
+requires-python = ">=3.10"
+dependencies = [
+    "python-pptx>=1.0.0",
+    "lxml>=4.9.0",
+]
+
+[project.scripts]
+pptx-merge = "pptx_slide_merger.cli:main"
