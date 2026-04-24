@@ -8,7 +8,7 @@ import pytest
 from pptx import Presentation as PptxPresentation
 from pptx.util import Inches
 
-from pptx_slide_merger import PptxMerger, list_slides
+from pptx_slide_merger import PptxMerger, list_slides, reorder_slides
 
 
 def _make_pptx(slide_titles: list[str], tmp_dir: Path) -> Path:
@@ -149,3 +149,17 @@ class TestPptxMerger:
 
         result = PptxPresentation(str(output))
         assert len(result.slides) == 1
+
+
+class TestReorderSlides:
+    def test_reorder_reverses_slides(self, tmp_dir):
+        pptx = _make_pptx(["First", "Second", "Third"], tmp_dir)
+        output = tmp_dir / "reordered.pptx"
+
+        reorder_slides(pptx, [2, 1, 0], output)
+
+        result = PptxPresentation(str(output))
+        assert len(result.slides) == 3
+        assert result.slides[0].shapes.title.text == "Third"
+        assert result.slides[1].shapes.title.text == "Second"
+        assert result.slides[2].shapes.title.text == "First"

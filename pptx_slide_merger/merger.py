@@ -84,6 +84,73 @@ def list_slides(pptx_path: Path) -> list[str]:
     return titles
 
 
+def reorder_slides(pptx_path: Path, new_order: list[int],
+                   output_path: Path | None = None) -> Path:
+    """
+    Rearrange slides in a PPTX file.
+
+    Args:
+        pptx_path: Path to the input PPTX file.
+        new_order: List of 0-based slide indices in desired order.
+                   Must be a permutation of range(num_slides).
+        output_path: Where to write the result. If None, overwrites pptx_path.
+
+    Returns:
+        The output path.
+
+    Raises:
+        ValueError: If new_order is not a valid permutation.
+    """
+    pptx_path = Path(pptx_path)
+    if output_path is None:
+        output_path = pptx_path
+    else:
+        output_path = Path(output_path)
+
+    # Copy source to output first (if different) so we modify a copy
+    if output_path != pptx_path:
+        shutil.copy2(pptx_path, output_path)
+
+    # Work directly on the output ZIP
+    tmp_out = output_path.with_suffix('.tmp.pptx')
+    with zipfile.ZipFile(output_path if output_path == pptx_path else output_path, 'r') as zin:
+        pres_xml = zin.read('ppt/presentation.xml')
+        pres_root = etree.fromstring(pres_xml)
+
+        sld_id_lst = pres_root.find(f'{{{NS_P}}}sldIdLst')
+        if sld_id_lst is None:
+            raise ValueError("No slides found in presentation")
+
+        sld_ids = list(sld_id_lst)
+        num_slides = len(sld_ids)
+
+        if sorted(new_order) != list(range(num_slides)):
+            raise ValueError(
+                f"new_order must be a permutation of range({num_slides}), "
+                f"got {new_order}")
+
+        # Rearrange: remove all, re-add in new order
+        for child in list(sld_id_lst):
+            sld_id_lst.remove(child)
+        for idx in new_order:
+            sld_id_lst.append(sld_ids[idx])
+
+        new_pres_xml = etree.tostring(pres_root, xml_declaration=True,
+                                       encoding="UTF-8", standalone=True)
+
+        # Rewrite the ZIP with updated presentation.xml
+        with zipfile.ZipFile(tmp_out, 'w', zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                if item.filename == 'ppt/presentation.xml':
+                    zout.writestr(item, new_pres_xml)
+                else:
+                    zout.writestr(item, zin.read(item.filename))
+
+    # Replace output with the temp file
+    tmp_out.replace(output_path)
+    return output_path
+
+
 def _parse_xml(path):
     return etree.parse(path)
 
