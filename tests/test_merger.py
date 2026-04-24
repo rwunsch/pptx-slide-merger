@@ -163,3 +163,48 @@ class TestReorderSlides:
         assert result.slides[0].shapes.title.text == "Third"
         assert result.slides[1].shapes.title.text == "Second"
         assert result.slides[2].shapes.title.text == "First"
+
+    def test_reorder_identity_preserves_order(self, tmp_dir):
+        pptx = _make_pptx(["A", "B", "C"], tmp_dir)
+        output = tmp_dir / "identity.pptx"
+
+        reorder_slides(pptx, [0, 1, 2], output)
+
+        result = PptxPresentation(str(output))
+        assert result.slides[0].shapes.title.text == "A"
+        assert result.slides[1].shapes.title.text == "B"
+        assert result.slides[2].shapes.title.text == "C"
+
+    def test_reorder_single_slide(self, tmp_dir):
+        pptx = _make_pptx(["Only"], tmp_dir)
+        output = tmp_dir / "single.pptx"
+
+        reorder_slides(pptx, [0], output)
+
+        result = PptxPresentation(str(output))
+        assert len(result.slides) == 1
+        assert result.slides[0].shapes.title.text == "Only"
+
+    def test_reorder_invalid_permutation_raises(self, tmp_dir):
+        pptx = _make_pptx(["A", "B", "C"], tmp_dir)
+        output = tmp_dir / "bad.pptx"
+
+        with pytest.raises(ValueError, match="permutation"):
+            reorder_slides(pptx, [0, 1], output)  # wrong length
+
+    def test_reorder_duplicate_indices_raises(self, tmp_dir):
+        pptx = _make_pptx(["A", "B", "C"], tmp_dir)
+        output = tmp_dir / "dup.pptx"
+
+        with pytest.raises(ValueError, match="permutation"):
+            reorder_slides(pptx, [0, 0, 1], output)  # duplicate
+
+    def test_reorder_in_place(self, tmp_dir):
+        pptx = _make_pptx(["X", "Y", "Z"], tmp_dir)
+
+        reorder_slides(pptx, [2, 0, 1])  # no output_path -> in-place
+
+        result = PptxPresentation(str(pptx))
+        assert result.slides[0].shapes.title.text == "Z"
+        assert result.slides[1].shapes.title.text == "X"
+        assert result.slides[2].shapes.title.text == "Y"
