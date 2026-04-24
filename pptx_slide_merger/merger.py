@@ -107,13 +107,8 @@ def reorder_slides(pptx_path: Path, new_order: list[int],
     else:
         output_path = Path(output_path)
 
-    # Copy source to output first (if different) so we modify a copy
-    if output_path != pptx_path:
-        shutil.copy2(pptx_path, output_path)
-
-    # Work directly on the output ZIP
     tmp_out = output_path.with_suffix('.tmp.pptx')
-    with zipfile.ZipFile(output_path if output_path == pptx_path else output_path, 'r') as zin:
+    with zipfile.ZipFile(pptx_path, 'r') as zin:
         pres_xml = zin.read('ppt/presentation.xml')
         pres_root = etree.fromstring(pres_xml)
 
