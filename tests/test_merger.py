@@ -8,7 +8,7 @@ import pytest
 from pptx import Presentation as PptxPresentation
 from pptx.util import Inches
 
-from pptx_slide_merger import PptxMerger, list_slides, reorder_slides
+from pptx_slide_merger import PptxMerger, list_slides, reorder_slides, move_slide
 
 
 def _make_pptx(slide_titles: list[str], tmp_dir: Path) -> Path:
@@ -208,3 +208,58 @@ class TestReorderSlides:
         assert result.slides[0].shapes.title.text == "Z"
         assert result.slides[1].shapes.title.text == "X"
         assert result.slides[2].shapes.title.text == "Y"
+
+
+class TestMoveSlide:
+    def test_move_slide_forward(self, tmp_dir):
+        """Move slide 0 to position 2: [A,B,C] -> [B,C,A]"""
+        pptx = _make_pptx(["A", "B", "C"], tmp_dir)
+        output = tmp_dir / "moved.pptx"
+
+        move_slide(pptx, 0, 2, output)
+
+        result = PptxPresentation(str(output))
+        assert result.slides[0].shapes.title.text == "B"
+        assert result.slides[1].shapes.title.text == "C"
+        assert result.slides[2].shapes.title.text == "A"
+
+    def test_move_slide_backward(self, tmp_dir):
+        """Move slide 2 to position 0: [A,B,C] -> [C,A,B]"""
+        pptx = _make_pptx(["A", "B", "C"], tmp_dir)
+        output = tmp_dir / "moved.pptx"
+
+        move_slide(pptx, 2, 0, output)
+
+        result = PptxPresentation(str(output))
+        assert result.slides[0].shapes.title.text == "C"
+        assert result.slides[1].shapes.title.text == "A"
+        assert result.slides[2].shapes.title.text == "B"
+
+    def test_move_slide_same_position(self, tmp_dir):
+        """Move slide 1 to position 1: no change."""
+        pptx = _make_pptx(["A", "B", "C"], tmp_dir)
+        output = tmp_dir / "same.pptx"
+
+        move_slide(pptx, 1, 1, output)
+
+        result = PptxPresentation(str(output))
+        assert result.slides[0].shapes.title.text == "A"
+        assert result.slides[1].shapes.title.text == "B"
+        assert result.slides[2].shapes.title.text == "C"
+
+    def test_move_slide_invalid_index_raises(self, tmp_dir):
+        pptx = _make_pptx(["A", "B"], tmp_dir)
+
+        with pytest.raises(ValueError):
+            move_slide(pptx, 5, 0)
+
+    def test_move_slide_in_place(self, tmp_dir):
+        pptx = _make_pptx(["A", "B", "C", "D"], tmp_dir)
+
+        move_slide(pptx, 3, 1)  # in-place
+
+        result = PptxPresentation(str(pptx))
+        assert result.slides[0].shapes.title.text == "A"
+        assert result.slides[1].shapes.title.text == "D"
+        assert result.slides[2].shapes.title.text == "B"
+        assert result.slides[3].shapes.title.text == "C"

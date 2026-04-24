@@ -146,6 +146,44 @@ def reorder_slides(pptx_path: Path, new_order: list[int],
     return output_path
 
 
+def move_slide(pptx_path: Path, from_index: int, to_index: int,
+               output_path: Path | None = None) -> Path:
+    """
+    Move a single slide from one position to another.
+
+    Args:
+        pptx_path: Path to the PPTX file.
+        from_index: Current 0-based position of the slide.
+        to_index: Desired 0-based position.
+        output_path: Where to write the result. If None, overwrites pptx_path.
+
+    Returns:
+        The output path.
+
+    Raises:
+        ValueError: If indices are out of range.
+    """
+    pptx_path = Path(pptx_path)
+    with zipfile.ZipFile(pptx_path, 'r') as z:
+        pres_xml = z.read('ppt/presentation.xml')
+    pres_root = etree.fromstring(pres_xml)
+    sld_id_lst = pres_root.find(f'{{{NS_P}}}sldIdLst')
+    num_slides = len(sld_id_lst) if sld_id_lst is not None else 0
+
+    if not (0 <= from_index < num_slides):
+        raise ValueError(
+            f"from_index {from_index} out of range for {num_slides} slides")
+    if not (0 <= to_index < num_slides):
+        raise ValueError(
+            f"to_index {to_index} out of range for {num_slides} slides")
+
+    order = list(range(num_slides))
+    order.pop(from_index)
+    order.insert(to_index, from_index)
+
+    return reorder_slides(pptx_path, order, output_path)
+
+
 def _parse_xml(path):
     return etree.parse(path)
 
