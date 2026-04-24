@@ -1,6 +1,7 @@
 """Tests for PptxMerger — generates test fixtures, no external files needed."""
 
 import io
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -263,3 +264,46 @@ class TestMoveSlide:
         assert result.slides[1].shapes.title.text == "D"
         assert result.slides[2].shapes.title.text == "B"
         assert result.slides[3].shapes.title.text == "C"
+
+
+class TestCLI:
+    def test_cli_reorder(self, tmp_dir):
+        pptx = _make_pptx(["A", "B", "C"], tmp_dir)
+        output = tmp_dir / "cli_reordered.pptx"
+
+        result = subprocess.run(
+            ["pptx-merge", "reorder", str(pptx),
+             "--order", "2,0,1", "-o", str(output)],
+            capture_output=True, text=True)
+
+        assert result.returncode == 0
+        prs = PptxPresentation(str(output))
+        assert prs.slides[0].shapes.title.text == "C"
+        assert prs.slides[1].shapes.title.text == "A"
+        assert prs.slides[2].shapes.title.text == "B"
+
+    def test_cli_move(self, tmp_dir):
+        pptx = _make_pptx(["A", "B", "C"], tmp_dir)
+        output = tmp_dir / "cli_moved.pptx"
+
+        result = subprocess.run(
+            ["pptx-merge", "move", str(pptx),
+             "--from", "2", "--to", "0", "-o", str(output)],
+            capture_output=True, text=True)
+
+        assert result.returncode == 0
+        prs = PptxPresentation(str(output))
+        assert prs.slides[0].shapes.title.text == "C"
+        assert prs.slides[1].shapes.title.text == "A"
+        assert prs.slides[2].shapes.title.text == "B"
+
+    def test_cli_list(self, tmp_dir):
+        pptx = _make_pptx(["Slide A", "Slide B"], tmp_dir)
+
+        result = subprocess.run(
+            ["pptx-merge", "list", str(pptx)],
+            capture_output=True, text=True)
+
+        assert result.returncode == 0
+        assert "Slide A" in result.stdout
+        assert "Slide B" in result.stdout
