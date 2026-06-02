@@ -9,8 +9,9 @@ Pure-Python PowerPoint slide management: merge slides across decks, reorder with
 | **Core Library** | [`pptx_slide_merger/`](pptx_slide_merger/) | Python API + CLI for slide merging, reordering, and listing |
 | **MCP Server** | [`mcp_server/`](mcp_server/) | MCP tools for AI assistants (planned) |
 | **Skill** | [`skill/`](skill/) | Claude Code skill for CLI-based slide management |
+| **Visual-edits diff** | [`scripts/diff_pptx_styling.py`](scripts/diff_pptx_styling.py) | Diff two PPTX files at shape/paragraph/run level — see [visual-edits workflow](docs/visual-edits-workflow.md) |
 
-See [Architecture](docs/architecture.md) for design decisions and component relationships.
+See [Architecture](docs/architecture.md) for design decisions and component relationships. Real-engagement patterns and learnings in [docs/learnings-from-real-engagements.md](docs/learnings-from-real-engagements.md).
 
 ## Quick Start
 

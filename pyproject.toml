@@ -23,3 +23,8 @@ test = [
 
 [project.scripts]
 pptx-merge = "pptx_slide_merger.cli:main"
+
+[tool.setuptools]
+# Explicit — the repo has multiple top-level dirs (skill/, mcp_server/), which
+# defeats setuptools' flat-layout auto-discovery. Only the core lib is the package.
+packages = ["pptx_slide_merger"]

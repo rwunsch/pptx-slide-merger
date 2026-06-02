@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from .merger import PptxMerger, list_slides, reorder_slides, move_slide
+from .review import build_review_viewer
 
 
 def _cmd_merge(args):
@@ -63,6 +64,16 @@ def _cmd_move(args):
               f"in {output.name}")
 
 
+def _cmd_review(args):
+    """Build a slide-review viewer (rendered slides + Reviewer Mode overlay)."""
+    out = build_review_viewer(
+        args.file, out_dir=args.output, dpi=args.dpi, verbose=not args.quiet)
+    if not args.quiet:
+        print(f"\nServe the folder and open it, e.g.:")
+        print(f"  python3 -m http.server -d {out.parent} 8000")
+        print(f"  open http://localhost:8000/")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="PPTX slide merger and manager.",
@@ -108,6 +119,19 @@ def main():
                         help="Output file (default: overwrite input)")
     move_p.add_argument("-q", "--quiet", action="store_true")
 
+    # --- review ---
+    review_p = subparsers.add_parser(
+        "review",
+        help="Build a slide-review viewer with a Reviewer Mode commenting overlay",
+        epilog="Example: pptx-merge review deck.pptx -o deck-review/",
+    )
+    review_p.add_argument("file", type=Path, help="PPTX file to review")
+    review_p.add_argument("-o", "--output", type=Path, default=None,
+                          help="Output folder (default: <deck>-review/)")
+    review_p.add_argument("--dpi", type=int, default=96,
+                          help="Render resolution for slide PNGs (default: 96)")
+    review_p.add_argument("-q", "--quiet", action="store_true")
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -134,6 +158,11 @@ def main():
             print(f"Error: {args.file} not found", file=sys.stderr)
             sys.exit(1)
         _cmd_move(args)
+    elif args.command == "review":
+        if not args.file.exists():
+            print(f"Error: {args.file} not found", file=sys.stderr)
+            sys.exit(1)
+        _cmd_review(args)
 
 
 if __name__ == "__main__":
