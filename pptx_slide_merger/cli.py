@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .merger import PptxMerger, list_slides, reorder_slides, move_slide
 from .review import build_review_viewer
+from .review_server import serve as serve_review
 
 
 def _cmd_merge(args):
@@ -68,10 +69,17 @@ def _cmd_review(args):
     """Build a slide-review viewer (rendered slides + Reviewer Mode overlay)."""
     out = build_review_viewer(
         args.file, out_dir=args.output, dpi=args.dpi, verbose=not args.quiet)
+    if args.serve:
+        # Serve with the save-server so reviewer auto-saves persist to disk.
+        serve_review(out.parent, port=args.port, verbose=not args.quiet)
+        return
     if not args.quiet:
-        print(f"\nServe the folder and open it, e.g.:")
+        print("\nServe the folder with the save-server (auto-saves persist to disk):")
+        print(f"  pptx-merge review {args.file} -o {out.parent} --serve")
+        print(f"  # or, standalone:  python3 {out.parent / 'serve-review.py'}")
+        print("  open http://localhost:8000/")
+        print("\nStatic-only (Export/Copy fallback, no auto-save to disk):")
         print(f"  python3 -m http.server -d {out.parent} 8000")
-        print(f"  open http://localhost:8000/")
 
 
 def main():
@@ -130,6 +138,11 @@ def main():
                           help="Output folder (default: <deck>-review/)")
     review_p.add_argument("--dpi", type=int, default=96,
                           help="Render resolution for slide PNGs (default: 96)")
+    review_p.add_argument("--serve", action="store_true",
+                          help="After building, serve the viewer with the save-server "
+                               "so reviewer auto-saves persist to disk (Ctrl+C to stop)")
+    review_p.add_argument("--port", type=int, default=8000,
+                          help="Port for --serve (default: 8000)")
     review_p.add_argument("-q", "--quiet", action="store_true")
 
     args = parser.parse_args()

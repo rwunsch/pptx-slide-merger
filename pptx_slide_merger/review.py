@@ -7,15 +7,20 @@ rendered PDF preview (see docs/visual-edits-workflow.md). This module builds a
 shape geometry from the OOXML so a click can be resolved to the nearest shape, and
 emits a self-contained static HTML viewer with a Reviewer Mode overlay.
 
-The viewer mirrors the STACK deck's `js/reviewer.js` in spirit:
+The viewer mirrors the STACK deck's finalized `js/reviewer.js` in spirit:
 
-  - toggle Reviewer Mode (button or `R` key)
+  - a collapsible / opt-in "Review" toggle (button or `R` key) — collapsed by
+    default so the viewer is a clean slide browser until you opt in
   - click anywhere on a slide image to drop a comment pinned at that location
   - the click is slide-aware (slide index + title), location-aware (x/y % of the
     slide), and element/region-aware (nearest shape: name + text + bbox)
-  - comments persist to localStorage and Export to `review-comments.json`
-  - a "Copy for Claude" button emits markdown so the deck author / Claude can read
-    the feedback and execute the changes
+  - the comment bubble auto-saves 2s after the last keystroke, and on click-outside
+    (the outside click is consumed so it never drops a stray second bubble)
+  - a capture-phase keyboard shield so typing in a comment (letters like r/x/p)
+    never triggers viewer navigation/shortcuts
+  - comments persist to localStorage, best-effort PUT to `review-comments.json`
+    (when served by the review save-server — no manual Export needed), and Export
+    + Copy-for-Claude as fallbacks
   - if `review-comments.json` sits next to the viewer it is auto-loaded on startup
 
 The exported JSON is machine-readable: every comment carries the slide index, the
@@ -286,8 +291,10 @@ def build_review_viewer(pptx_path: Path, out_dir: Path | None = None,
       <out_dir>/index.html        — the viewer + Reviewer Mode overlay
       <out_dir>/slides.json        — slide metadata (title, png, shapes)
       <out_dir>/slide-N.png        — rendered slides
-      <out_dir>/review-comments.json (created/updated by the viewer on Export;
-                                       auto-loaded on startup if present)
+      <out_dir>/serve-review.py    — one-shot save-server shim (serves this dir AND
+                                       persists the reviewer's auto-saves to disk)
+      <out_dir>/review-comments.json (written by the save-server on auto-save, or by
+                                       the viewer's Export; auto-loaded on startup)
 
     Returns the path to index.html.
     """
@@ -322,11 +329,105 @@ def build_review_viewer(pptx_path: Path, out_dir: Path | None = None,
     html = _VIEWER_HTML.replace("__DECK_NAME__", _escape(pptx_path.name))
     (out_dir / "index.html").write_text(html)
 
+    # Drop a one-shot save-server shim next to the viewer so a reviewer can persist
+    # auto-saves to disk without the package installed:  python3 serve-review.py
+    shim = out_dir / "serve-review.py"
+    shim.write_text(_SERVE_SHIM)
+    shim.chmod(0o755)
+
     if verbose:
         print(f"Review viewer: {out_dir / 'index.html'} ({n} slides)")
-        print("Open it in a browser, press R to toggle Reviewer Mode, "
-              "click slides to comment, then Export.")
+        print("Open it in a browser, toggle Review (or press R), "
+              "click slides to comment. Auto-saves on 2s idle / click-outside.")
     return out_dir / "index.html"
+
+
+# A standalone shim dropped into the viewer dir. It prefers the installed package's
+# save-server; if pptx-slide-merger isn't importable it falls back to an inline
+# copy of the same handler so the folder stays self-contained and portable.
+_SERVE_SHIM = r'''#!/usr/bin/env python3
+"""Serve this review viewer dir AND persist the reviewer's auto-saves to disk.
+
+    python3 serve-review.py [--port 8000]
+
+PUT/POST /review-comments.json writes the comments straight into this folder, so
+Reviewer Mode auto-save (2s idle / click-outside) lands on disk with no Export.
+"""
+import argparse, json, sys
+from functools import partial
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+COMMENTS_FILE = "review-comments.json"
+
+
+class H(SimpleHTTPRequestHandler):
+    def _write(self):
+        p = self.path.split("?", 1)[0]
+        if not p.endswith(COMMENTS_FILE):
+            self.send_error(404, "not found"); return
+        try:
+            n = int(self.headers.get("Content-Length", 0))
+        except (TypeError, ValueError):
+            n = 0
+        if n <= 0 or n > 8 * 1024 * 1024:
+            self._json(400, {"ok": False, "error": "bad length"}); return
+        body = self.rfile.read(n)
+        try:
+            json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            self._json(400, {"ok": False, "error": "invalid json"}); return
+        (HERE / COMMENTS_FILE).write_bytes(body)
+        sys.stderr.write(f"[review] saved {COMMENTS_FILE} ({len(body)} bytes)\n")
+        self._json(200, {"ok": True})
+
+    def do_PUT(self): self._write()
+    def do_POST(self): self._write()
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET,PUT,POST,OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
+
+    def end_headers(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
+    def _json(self, status, payload):
+        b = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers(); self.wfile.write(b)
+
+    def log_message(self, fmt, *a):
+        sys.stderr.write("[review] " + (fmt % a) + "\n")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--host", default="127.0.0.1")
+    args = ap.parse_args()
+    httpd = ThreadingHTTPServer((args.host, args.port),
+                                partial(H, directory=str(HERE)))
+    print(f"Review save-server on http://{args.host}:{httpd.server_address[1]}/  "
+          f"(PUT {COMMENTS_FILE} persists into {HERE})")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nstopped")
+    finally:
+        httpd.server_close()
+
+
+if __name__ == "__main__":
+    main()
+'''
 
 
 def _escape(s: str) -> str:
@@ -379,6 +480,16 @@ _VIEWER_HTML = r"""<!doctype html>
   footer { padding:6px 16px; color:#8b95a7; font-size:12px; border-top:1px solid #2a2f3e; }
   #toast { position:fixed; left:16px; bottom:16px; z-index:2000; background:#1b2030; color:#a3e6d8;
            border:1px solid #2bbfa9; border-radius:6px; padding:6px 10px; font-size:12px; display:none; }
+  /* Review toggle: opt-in, collapsed by default. Lights up when on. */
+  #rvToggle { display:inline-flex; align-items:center; gap:6px; }
+  #rvToggle.rv-on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  #rvToggle .rv-count { background:#fff; color:var(--accent); border-radius:999px;
+           padding:0 7px; font-weight:700; font-size:11px; }
+  #rvToggle.rv-on .rv-count { background:#12141f; color:#fff; }
+  #rvToggle .rv-count:empty { display:none; }
+  /* Review-only controls (panel actions) hidden until review mode is on. */
+  .rv-only { display:none; }
+  body.rv-active .rv-only { display:inline-block; }
 </style>
 </head>
 <body>
@@ -386,14 +497,13 @@ _VIEWER_HTML = r"""<!doctype html>
   <h1>Slide Review</h1>
   <span class="deck">__DECK_NAME__</span>
   <div class="nav">
-    <button id="rvToggle">🖉 Reviewer: <b>off</b></button>
-    <span id="count">0</span>
     <button id="prev">◀</button>
     <span id="pos" style="font:12px monospace;color:#8b95a7"></span>
     <button id="next">▶</button>
-    <button id="export" title="Download review-comments.json">⤓ Export</button>
-    <button id="copy" title="Copy all comments as markdown for Claude">⧉ Copy for Claude</button>
-    <button id="clear" title="Clear all comments">✕ Clear</button>
+    <button id="rvToggle" title="Toggle Reviewer Mode (R)" aria-pressed="false">🖉 Review<span class="rv-count"></span></button>
+    <button id="export" class="rv-only" title="Download review-comments.json">⤓ Export</button>
+    <button id="copy" class="rv-only" title="Copy all comments as markdown for Claude">⧉ Copy for Claude</button>
+    <button id="clear" class="rv-only" title="Clear all comments">✕ Clear</button>
   </div>
 </header>
 
@@ -403,9 +513,7 @@ _VIEWER_HTML = r"""<!doctype html>
     <div class="rv-shapebox" id="shapebox"></div>
   </div>
 </div>
-<footer>Reviewer Mode: press <b>R</b> or the toggle, then click a slide to drop a comment.
-Comments are slide-aware, location-aware, and shape-aware, and Export to
-<code>review-comments.json</code> next to this page.</footer>
+<footer><span id="footHint">Toggle <b>Review</b> (or press <b>R</b>) to start commenting. Collapsed = clean viewing.</span></footer>
 <div id="toast"></div>
 
 <script>
@@ -425,7 +533,17 @@ Comments are slide-aware, location-aware, and shape-aware, and Export to
   function load() {
     try { comments = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]'); } catch { comments = []; }
   }
-  function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(comments)); renderBadge(); renderPins(); }
+  function save() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(comments));
+    renderBadge(); renderPins();
+    // best-effort: persist straight into the viewer folder via the save-server (PUT).
+    // On a plain static server (no save-server) this 405/404s harmlessly — localStorage
+    // + Export still work as the fallback.
+    fetch('review-comments.json', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(comments, null, 2)
+    }).then(r => { if (r.ok) toast('Saved to folder ✓'); }).catch(() => {});
+  }
   async function loadFile() {
     try {
       const r = await fetch('review-comments.json', { cache: 'no-store' });
@@ -464,10 +582,14 @@ Comments are slide-aware, location-aware, and shape-aware, and Export to
     renderPins();
   }
 
-  function renderBadge() { $('count').textContent = comments.length; }
+  function renderBadge() {
+    const c = document.querySelector('#rvToggle .rv-count');
+    if (c) c.textContent = comments.length ? comments.length : '';
+  }
 
   function renderPins() {
     wrap.querySelectorAll('.rv-pin').forEach(p => p.remove());
+    if (!active) return;   // pins only show in review mode (clean viewing otherwise)
     comments.filter(c => c.slideIndex === cur).forEach((c) => {
       const pin = document.createElement('div');
       pin.className = 'rv-pin';
@@ -482,12 +604,25 @@ Comments are slide-aware, location-aware, and shape-aware, and Export to
   function setActive(on) {
     active = on;
     document.body.classList.toggle('rv-active', on);
-    $('rvToggle').querySelector('b').textContent = on ? 'on' : 'off';
+    const t = $('rvToggle');
+    t.classList.toggle('rv-on', on);
+    t.setAttribute('aria-pressed', on ? 'true' : 'false');
+    $('footHint').innerHTML = on
+      ? 'Click a slide to comment. Bubble auto-saves on 2s idle or click-outside. <b>R</b> / ✕ Review to exit.'
+      : 'Toggle <b>Review</b> (or press <b>R</b>) to start commenting. Collapsed = clean viewing.';
     if (!on) { closePop(); shapebox.style.display = 'none'; }
+    renderPins();
   }
 
   // ---------- popovers ----------
-  function closePop() { if (pop) { pop.remove(); pop = null; } }
+  // commitPending: while a new-comment bubble is open, this holds the function that
+  // commits it. A click outside (or 2s idle) calls it; closePop clears it.
+  let commitPending = null, idleTimer = null;
+  function closePop() {
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+    commitPending = null;
+    if (pop) { pop.remove(); pop = null; }
+  }
   function place(el, x, y) {
     el.style.left = Math.min(x, window.innerWidth - 340) + 'px';
     el.style.top = Math.min(y, window.innerHeight - 230) + 'px';
@@ -507,27 +642,38 @@ Comments are slide-aware, location-aware, and shape-aware, and Export to
       '<div class="row"><button class="cancel">Cancel</button>' +
       '<button class="primary save">Save</button></div>';
     document.body.appendChild(pop); place(pop, clientX, clientY);
-    pop.querySelector('textarea').focus();
-    pop.querySelector('.cancel').onclick = closePop;
-    pop.querySelector('.save').onclick = () => {
-      const text = pop.querySelector('textarea').value.trim();
-      if (!text) { closePop(); return; }
-      comments.push({
-        id: 'c' + Date.now() + Math.floor(Math.random() * 1e4),
-        type: 'comment',
-        slideIndex: cur,
-        slideNumber: s.number,
-        slideTitle: s.title,
-        xPct: xPct, yPct: yPct,
-        targetShape: target ? {
-          name: target.name, text: target.text,
-          xPct: target.xPct, yPct: target.yPct, wPct: target.wPct, hPct: target.hPct
-        } : null,
-        comment: text,
-        ts: new Date().toISOString()
-      });
-      save(); closePop();
-    };
+    const ta = pop.querySelector('textarea'); ta.focus();
+    let done = false;
+    function commitComment() {
+      if (done) return; done = true;
+      const text = ta.value.trim();
+      if (text) {
+        comments.push({
+          id: 'c' + Date.now() + Math.floor(Math.random() * 1e4),
+          type: 'comment',
+          slideIndex: cur,
+          slideNumber: s.number,
+          slideTitle: s.title,
+          xPct: xPct, yPct: yPct,
+          targetShape: target ? {
+            name: target.name, text: target.text,
+            xPct: target.xPct, yPct: target.yPct, wPct: target.wPct, hPct: target.hPct
+          } : null,
+          comment: text,
+          ts: new Date().toISOString()
+        });
+        save();
+      }
+      closePop();
+    }
+    commitPending = commitComment;
+    // auto-save: 2s after the last keystroke
+    ta.addEventListener('input', () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(commitComment, 2000);
+    });
+    pop.querySelector('.cancel').onclick = () => { done = true; closePop(); }; // discard
+    pop.querySelector('.save').onclick = commitComment;
   }
   function openView(c, x, y) {
     closePop();
@@ -594,15 +740,26 @@ Comments are slide-aware, location-aware, and shape-aware, and Export to
       shapebox.style.height = sh.hPct + '%';
     } else { shapebox.style.display = 'none'; }
   });
-  wrap.addEventListener('click', (e) => {
+  // Capture-phase document click: while a new-comment bubble is open, a click
+  // anywhere outside it auto-saves the bubble AND is consumed, so it never also
+  // drops a stray second comment. Otherwise a click on the slide opens a new one.
+  document.addEventListener('click', (e) => {
     if (!active) return;
-    if (e.target.classList.contains('rv-pin')) return;
+    const t = e.target;
+    // ignore clicks on our own chrome / the open bubble / a pin
+    if (t.closest('.rv-pop') || t.closest('header') || t.classList.contains('rv-pin')) return;
+    if (commitPending) {
+      e.preventDefault(); e.stopPropagation();
+      commitPending();
+      return;
+    }
+    if (!wrap.contains(t)) return;     // clicks off the slide image do nothing
     const r = wrap.getBoundingClientRect();
     const xPct = +(((e.clientX - r.left) / r.width) * 100).toFixed(2);
     const yPct = +(((e.clientY - r.top) / r.height) * 100).toFixed(2);
     openNew(Math.max(0, Math.min(100, xPct)), Math.max(0, Math.min(100, yPct)),
             hitShape(xPct, yPct), e.clientX, e.clientY);
-  });
+  }, true);
 
   $('rvToggle').onclick = () => setActive(!active);
   $('prev').onclick = () => showSlide(cur - 1);
@@ -611,9 +768,17 @@ Comments are slide-aware, location-aware, and shape-aware, and Export to
   $('copy').onclick = copyForClaude;
   $('clear').onclick = () => { if (confirm('Clear all ' + comments.length + ' comments?')) { comments = []; save(); } };
 
+  // Keyboard shield: typing inside a comment field must never reach the viewer's
+  // global key handler (R toggle, arrows). Capture phase + stopPropagation so
+  // letters like r/x/p type into the textarea instead of navigating. Do NOT
+  // preventDefault — let the character through.
+  const isTypingTarget = (t) => t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' ||
+      t.isContentEditable === true || (t.closest && t.closest('.rv-pop')));
+  ['keydown', 'keypress', 'keyup'].forEach(ev =>
+    document.addEventListener(ev, (e) => { if (isTypingTarget(e.target)) e.stopPropagation(); }, true));
+
   window.addEventListener('keydown', (e) => {
-    const typing = e.target.tagName === 'TEXTAREA' || e.target.tagName === 'INPUT';
-    if (typing) return;
+    if (isTypingTarget(e.target)) return;
     if (e.key === 'r' || e.key === 'R') { if (!e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); setActive(!active); } }
     else if (e.key === 'ArrowLeft') showSlide(cur - 1);
     else if (e.key === 'ArrowRight') showSlide(cur + 1);
